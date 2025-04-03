@@ -1,16 +1,12 @@
-
-
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List
 import pandas as pd
 import numpy as np
+import math
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.decomposition import NMF, TruncatedSVD
 from sklearn.neighbors import NearestNeighbors
-
-
-
 
 app = FastAPI(title="Movie Recommendation API")
 
@@ -36,6 +32,19 @@ def jaccard_similarity(g1: str, g2: str) -> float:
     s1 = set(g1.split("|"))
     s2 = set(g2.split("|"))
     return len(s1 & s2) / len(s1 | s2) if s1 and s2 else 0
+
+# Fonction pour nettoyer les valeurs NaN dans l'objet à retourner
+def sanitize(obj):
+    if isinstance(obj, dict):
+        return {k: sanitize(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [sanitize(i) for i in obj]
+    elif isinstance(obj, float):
+        if math.isnan(obj):
+            return 0.0  # Remplace NaN par 0.0 (ajuste selon tes besoins)
+        return obj
+    else:
+        return obj
 
 # Point d'entrée de l'API pour obtenir des recommandations
 @app.post("/recommend")
@@ -78,20 +87,15 @@ def recommend(profile: Profile):
     recommendations = {}
 
     ## 1. Recommandation basée sur le contenu (Jaccard)
-    # On utilise l'unicité des films (titre et genres) dans le dataset original
     df_unique = df.drop_duplicates(subset="title")[["title", "genres"]]
-    # Sélectionner le film préféré (celui avec la note la plus élevée) du profil
     best_film = max(profile.films, key=lambda f: f.rating)
-    # Calcul de la similarité de Jaccard avec le film préféré
     df_unique["similarity"] = df_unique["genres"].apply(lambda g: jaccard_similarity(g, best_film.genres))
     content_reco = df_unique[df_unique["title"] != best_film.title].nlargest(5, "similarity")[["title", "similarity"]]
     recommendations["content_based"] = content_reco.to_dict(orient="records")
 
     ## 2. Recommandation collaborative – Approche mémoire (Cosine Similarity)
-    # Calcul de la similarité cosinus entre tous les utilisateurs
     user_sim = cosine_similarity(rating_matrix_filled)
     user_sim_df = pd.DataFrame(user_sim, index=rating_matrix_filled.index, columns=rating_matrix_filled.index)
-    # Identifier les films non notés par le nouvel utilisateur
     movies_to_predict = rating_matrix.loc[new_user_id][rating_matrix.loc[new_user_id].isna()].index
     sim_new_user = user_sim_df.loc[new_user_id]
     predictions_memory = {}
@@ -160,13 +164,13 @@ def recommend(profile: Profile):
     except Exception as e:
         recommendations["collaborative_knn"] = f"Erreur lors de l'exécution de KNN: {e}"
 
-    return recommendations
+    # Nettoyer la réponse pour remplacer les NaN par 0.0 (ou une autre valeur par défaut)
+    return sanitize(recommendations)
+
+@app.get("/")
+def home():
+    return {"message": "Bienvenue sur l'API de recommandation de films"}
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
-    
-@app.get("/")
-def home():
-    return {"message": "Bienvenue sur l'API de recommandation de films ✨"}
-
